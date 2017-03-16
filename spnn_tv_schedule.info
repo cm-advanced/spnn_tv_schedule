@@ -1,0 +1,8 @@
+name = SPNN TV Schedule
+description = SPNN TV Schedule
+package = SPNN
+core = 7.x
+dependencies[] = cm_airing
+dependencies[] = cm_show_airings
+dependencies[] = cm_airing_type
+dependencies[] = cm_tv_schedules

@@ -1,0 +1,241 @@
+<?php
+
+/**
+ * Implements hook_theme_registry_alter(&$theme_registry).
+ *
+ * Fixes issue w/ schdules needing different TPL based on site.
+ */
+function spnn_tv_schedule_theme_registry_alter(&$theme_registry) {
+  $path = drupal_get_path('module', 'spnn_tv_schedule') . '/templates/cm_tv_schedules/';
+  $theme_registry['calendar_day']['theme path'] = drupal_get_path('module', 'spnn_tv_schedule');
+  $theme_registry['calendar_day']['path'] = $path;
+}
+
+/**
+ * Implements hook_cronapi($op, $job = NULL).
+ */
+function spnn_tv_schedule_cronapi($op, $job = NULL) {
+  $items = array();
+
+  /*
+    * CHANNEL KEY *
+    CH14 [ col_no=1 ]
+    CH15 [ col_no=2 ]
+    CH16 [ col_no=3 ]
+    CH19 [ col_no=4 ]
+  */
+
+  // Channel 14
+  $items['spnn_tv_schedule_process_ch_14'] = array(
+    'description' => 'Channel 14 RSS Feed',
+    'rule' => '0 */3 * * *',
+    'callback' => '_spnn_tv_schedule__channel_14',
+    'weight' => 1,
+  );
+
+  // Channel 15
+  $items['spnn_tv_schedule_process_ch_15'] = array(
+    'description' => 'Channel 15 RSS Feed',
+    'rule' => '0 */3 * * *',
+    'callback' => '_spnn_tv_schedule__channel_15',
+    'weight' => 2,
+  );
+
+  // Channel 16
+  $items['spnn_tv_schedule_process_ch_16'] = array(
+    'description' => 'Channel 16 RSS Feed',
+    'rule' => '0 */3 * * *',
+    'callback' => '_spnn_tv_schedule__channel_16',
+    'weight' => 3,
+  );
+
+  // Channel 19
+  $items['spnn_tv_schedule_process_ch_19'] = array(
+    'description' => 'Channel 19 RSS Feed',
+    'rule' => '0 */3 * * *',
+    'callback' => '_spnn_tv_schedule__channel_19',
+    'weight' => 4,
+  );
+
+  return $items;
+}
+
+/**
+ * Channel 14 Feed
+ */
+function _spnn_tv_schedule__channel_14() {
+  _spnn_tv_schedule_process($channel = 'col_no=1');
+}
+
+/**
+ * Channel 15 Feed
+ */
+function _spnn_tv_schedule__channel_15() {
+  _spnn_tv_schedule_process($channel = 'col_no=2');
+}
+
+/**
+ * Channel 16 Feed
+ */
+function _spnn_tv_schedule__channel_16() {
+  _spnn_tv_schedule_process($channel = 'col_no=3');
+}
+
+/**
+ * Channel 19 Feed
+ */
+function _spnn_tv_schedule__channel_19() {
+  _spnn_tv_schedule_process($channel = 'col_no=4');
+}
+
+
+/**
+ * Cron callback function.
+ */
+function _spnn_tv_schedule_process($channel) {
+  // @todo should add something validates the RSS feed and rejects invalid feeds?
+  $data = spnn_tv_schedule_get_rss_feed($channel);
+
+  if ($data) {
+    foreach($data as $item) {
+      // Check if airing exists
+      if (!$airing_exists = spnn_tv_schedule_airing_exists($item['guid'])) {
+        $airing = spnn_tv_schedule_create_airing($item, $channel);
+
+        if ($airing) {
+          // Log success to watchdogg
+          watchdog(
+            $type = 'spnn_tv_schedule',
+            $message = 'Success! Created airing for GUID: %guid',
+            $variables = array('%guid' => $item['guid']),
+            $severity = WATCHDOG_INFO
+          );
+        }
+        else {
+          // Log failure to watchdog.
+          watchdog(
+            $type = 'spnn_tv_schedule',
+            $message = 'Failure! Could not create airing for GUID: %guid',
+            $variables = array('%guid' => $item['guid']),
+            $severity = WATCHDOG_ALERT
+          );
+        }
+      }
+      else {
+        // Log duplicate attemp
+        watchdog(
+          $type = 'spnn_tv_schedule',
+          $message = 'Airing already exists for GUID: %guid',
+          $variables = array('%guid' => $item['guid']),
+          $severity = WATCHDOG_INFO
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Helper function to get RSS feed.
+ */
+function spnn_tv_schedule_get_rss_feed($channel) {
+  // Get current timesstamp
+  $timestamp = time();
+  $month = date('n', $timestamp);
+  $day = date('j', $timestamp);
+  $year = date('Y', $timestamp);
+
+  // Build URL
+  $url = 'http://pw.myersinfosys.com/spnn/day.rss?month=' . $month . '&day=' . $day . '&year=' . $year . '&' . $channel;
+
+  // Init curl and pull in rss feed.
+  $curl = curl_init();
+  curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+  curl_setopt($curl, CURLOPT_URL, $url);
+  $xml = curl_exec($curl);
+  $channel = new SimpleXMLElement($xml);
+
+  foreach($channel->channel->item as $item) {
+    $data[] = array(
+      'guid' => (string) $item->{'guid'},
+      'title' => (string) $item->{'title'},
+      'link' => (string) $item->{'link'},
+      'description' => (string) $item->{'description'},
+      'pubDate' => (string) $item->{'pubDate'},
+    );
+  }
+
+  // Close curl
+  curl_close($curl);
+
+  return $data;
+}
+
+/**
+ * Helper function to check if airing exists, based on GUID field.
+ */
+function spnn_tv_schedule_airing_exists($guid) {
+  $query = new EntityFieldQuery;
+  $query->entityCondition('entity_type', 'airing')
+    ->fieldCondition('field_airing_guid', 'value', $guid, '=');
+  $result = $query->execute();
+
+  if (isset($result['airing'])) {
+    $aid = array_keys($result['airing']);
+    return $aid;
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Helper function to create airing entity.
+ */
+function spnn_tv_schedule_create_airing($item, $channel) {
+  $airing = new stdClass();
+  $airing->type = 'airing';
+  $airing->uid = 1;
+  $airing->field_airing_title[LANGUAGE_NONE][]['value'] = $item['title'];
+  $airing->field_airing_guid[LANGUAGE_NONE][]['value'] = $item['guid'];
+
+  // Process Date
+  // Why tho?
+  $mod_start_date = strtotime($item['pubDate']) + 60*60;
+  $airing->field_airing_date[LANGUAGE_NONE][]['value'] = date("Y-m-d H:i:s",$mod_start_date);
+  $airing->field_airing_date[LANGUAGE_NONE][]['timezone'] = 'UTC';
+  $airing->field_airing_date[LANGUAGE_NONE][]['timezone_db'] = 'UTC';
+  $airing->field_airing_date[LANGUAGE_NONE][]['offset'] = 0;
+  $airing->field_airing_date[LANGUAGE_NONE][]['offset2'] = 0;
+
+  // Channel
+  switch ($channel) {
+    case 'col_no=1':
+      $term_id = 1846;
+      break;
+
+    case 'col_no=2':
+      $term_id = 1847;
+      break;
+
+    case 'col_no=3':
+      $term_id = 1848;
+      break;
+
+    case 'col_no=4':
+      $term_id = 1849;
+      break;
+  }
+
+  $airing->field_airing_channel[LANGUAGE_NONE][]['tid'] = $term_id;
+
+
+  // Save airing and return status
+  // We don't use cm_airing_save() b/c it doesn't return a value
+  // and it also doesn't really do anything.
+  if (entity_save('airing', $airing)) {
+    return TRUE;
+  }
+  else {
+    return FALSE;
+  }
+}
